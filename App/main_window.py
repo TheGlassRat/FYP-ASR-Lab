@@ -101,7 +101,8 @@ class ModelLoaderThread(QThread):
             self.progress_signal.emit(self.model_key, 100, "Loaded")
             self.finished_signal.emit(self.model_key, model)
         except Exception as e:
-            self.progress_signal.emit(self.model_key, 0, f"Error: {e}")
+            self.progress_signal.emit(self.model_key, 0, "FAILED")
+            self.finished_signal.emit(self.model_key, e)
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -168,6 +169,14 @@ class MainWindow(QMainWindow):
         self.connect_signals()
         self.init_model_loading()
 
+    def set_comp_item(self, row, col, text, tooltip=None, color=None):
+        comp_table = self.comparison_ui.table
+        item = QTableWidgetItem(text)
+        item.setToolTip(tooltip if tooltip is not None else text)
+        if color:
+            item.setForeground(color)
+        comp_table.setItem(row, col, item)
+
     def clean_cache(self):
         """Silently cleans the cache directory without interrupting with permission errors."""
         if not os.path.exists(self.cache_dir):
@@ -209,13 +218,14 @@ class MainWindow(QMainWindow):
             item = QTableWidgetItem(key)
             item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
             item.setCheckState(Qt.Checked) 
+            item.setToolTip(key)
             comp_table.setItem(row, 0, item)
-            comp_table.setItem(row, 1, QTableWidgetItem("Initializing..."))
-            comp_table.setItem(row, 2, QTableWidgetItem("-"))
-            comp_table.setItem(row, 3, QTableWidgetItem("-"))
-            comp_table.setItem(row, 4, QTableWidgetItem("-"))
-            comp_table.setItem(row, 5, QTableWidgetItem("-"))
-            comp_table.setItem(row, 6, QTableWidgetItem("-"))
+            self.set_comp_item(row, 1, "Initializing...")
+            self.set_comp_item(row, 2, "-")
+            self.set_comp_item(row, 3, "-")
+            self.set_comp_item(row, 4, "-")
+            self.set_comp_item(row, 5, "-")
+            self.set_comp_item(row, 6, "-")
 
             # Parallel Threaded Loader
             thread = ModelLoaderThread(key)
@@ -230,7 +240,12 @@ class MainWindow(QMainWindow):
         else:
             prog.setRange(0, 100)
             prog.setValue(val)
-        lbl.setText(status)
+        # Prevent UI stretching by truncating very long status lines
+        display_status = status
+        if len(display_status) > 15:
+            display_status = display_status[:12] + "..."
+        lbl.setText(display_status)
+        lbl.setToolTip(status)
 
     def on_model_finished(self, key, model_or_error):
         prog, lbl = self.model_ui_refs[key]
@@ -250,22 +265,17 @@ class MainWindow(QMainWindow):
             lbl.setText("LOADED")
             lbl.setToolTip("Model is ready for inference")
             if row_idx != -1:
-                st_item = QTableWidgetItem("Ready")
-                st_item.setForeground(QColor("#4caf50"))
-                comp_table.setItem(row_idx, 1, st_item)
+                self.set_comp_item(row_idx, 1, "Ready", "Model is ready for inference", QColor("#4caf50"))
             self.update_predict_status()
         else:
             # Error case
             prog.setRange(0, 100)
             prog.setValue(0)
             error_msg = str(model_or_error)
-            lbl.setText(f"FAILED")
+            lbl.setText("FAILED")
             lbl.setToolTip(error_msg)
             if row_idx != -1:
-                err_item = QTableWidgetItem(f"LOAD ERROR")
-                err_item.setToolTip(error_msg)
-                err_item.setForeground(QColor("#cf6679"))
-                comp_table.setItem(row_idx, 1, err_item)
+                self.set_comp_item(row_idx, 1, "LOAD ERROR", error_msg, QColor("#cf6679"))
             self.update_predict_status()
 
     def connect_signals(self):
@@ -522,13 +532,22 @@ class MainWindow(QMainWindow):
         model_key = self.feedback_ui.model_selector.currentText()
         if model_key in self.models:
             self.feedback_ui.model_status_tag.setText("READY")
+            self.feedback_ui.model_status_tag.setToolTip("Model is ready for inference")
             self.feedback_ui.model_status_tag.setStyleSheet("color: #4caf50; font-weight: bold; font-size: 11px;")
         else:
             # Check if it's currently failing or loading
             _, lbl = self.model_ui_refs.get(model_key, (None, None))
             status = lbl.text() if lbl else "NOT LOADED"
-            self.feedback_ui.model_status_tag.setText(status)
-            color = "#ffa726" if "Loading" in status else "#cf6679"
+            tooltip_msg = lbl.toolTip() if lbl else "Model not loaded yet"
+            
+            # Truncate and clean status for safe display in UI
+            display_status = status
+            if len(display_status) > 15:
+                display_status = display_status[:12] + "..."
+                
+            self.feedback_ui.model_status_tag.setText(display_status)
+            self.feedback_ui.model_status_tag.setToolTip(tooltip_msg)
+            color = "#ffa726" if "Loading" in status or "Initializing" in status else "#cf6679"
             self.feedback_ui.model_status_tag.setStyleSheet(f"color: {color}; font-weight: bold; font-size: 11px;")
 
     def toggle_playback_feedback(self):
@@ -713,7 +732,7 @@ class MainWindow(QMainWindow):
         # Reset table results before starting
         for i in range(comp_table.rowCount()):
             for j in range(1, 7):
-                comp_table.setItem(i, j, QTableWidgetItem("-"))
+                self.set_comp_item(i, j, "-")
         QApplication.processEvents()
 
         selected_models = []
@@ -723,10 +742,10 @@ class MainWindow(QMainWindow):
                 model_key = item.text()
                 if model_key in self.models:
                     selected_models.append((i, model_key, self.models[model_key]))
-                    comp_table.setItem(i, 1, QTableWidgetItem("Waiting..."))
+                    self.set_comp_item(i, 1, "Waiting...")
                 else:
-                    comp_table.setItem(i, 1, QTableWidgetItem("NOT LOADED"))
-                    for j in range(2, 7): comp_table.setItem(i, j, QTableWidgetItem("-"))
+                    self.set_comp_item(i, 1, "NOT LOADED")
+                    for j in range(2, 7): self.set_comp_item(i, j, "-")
 
         if not selected_models:
             QMessageBox.warning(self, "No Models", "Select at least one loaded model for comparison.")
@@ -740,19 +759,13 @@ class MainWindow(QMainWindow):
         self.comp_thread = ComparisonThread(selected_models, self.current_audio_path, self.validation_text)
         
         def on_row_updated(row, status, text, conf, lat, wer, rtfx):
-            st_item = QTableWidgetItem(status)
-            if status == "Completed": st_item.setForeground(QColor("#4caf50"))
-            elif "FAILED" in status: st_item.setForeground(QColor("#cf6679"))
-            comp_table.setItem(row, 1, st_item)
-            
-            txt_item = QTableWidgetItem(text)
-            txt_item.setToolTip(text)
-            comp_table.setItem(row, 2, txt_item)
-            
-            comp_table.setItem(row, 3, QTableWidgetItem(conf))
-            comp_table.setItem(row, 4, QTableWidgetItem(lat))
-            comp_table.setItem(row, 5, QTableWidgetItem(wer))
-            comp_table.setItem(row, 6, QTableWidgetItem(rtfx))
+            st_color = QColor("#4caf50") if status == "Completed" else (QColor("#cf6679") if "FAILED" in status else None)
+            self.set_comp_item(row, 1, status, color=st_color)
+            self.set_comp_item(row, 2, text)
+            self.set_comp_item(row, 3, conf)
+            self.set_comp_item(row, 4, lat)
+            self.set_comp_item(row, 5, wer)
+            self.set_comp_item(row, 6, rtfx)
 
         def on_finished():
             self.comparison_ui.setEnabled(True)
